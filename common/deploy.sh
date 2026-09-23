@@ -38,24 +38,23 @@ else
   ${GO} build -o ${APP_NAME} .
 fi
 
-# DNSゾーン再適用
+# DNSゾーン再適用(PowerDNSはこのホストで動くが、バックエンドのisudns DBは
+# 別ホスト(db host)にある。gmysql-host の向き先は etc/ 配下の
+# powerdns/pdns.d/gmysql-host.conf で管理する)
 bash /home/isucon/webapp/pdns/init_zone.sh
 
-# ミドルウェア・Appの再起動
+# ミドルウェア・Appの再起動。MySQLはこのホストでは動かない(dbホストに分離済み、
+# common/deploy_db.sh参照)ため、ここではmysqlに触れない。
 sudo systemctl daemon-reload
-sudo systemctl restart mysql
 sudo systemctl restart nginx
 sudo systemctl restart pdns
 sudo systemctl restart ${APP_NAME}-go.service
 
-# ログをdeployのたびに空にする。nginx/mysqlはファイルディスクリプタを保持したまま
-# truncateすれば書き込みを継続できるので再起動は不要。これをしないとslow
-# queryログ(long_query_time=0で全クエリ記録)が起動からの累積になり、
-# (1) 直近のベンチ実行だけを対象にした alp/slp 解析ができなくなる、
-# (2) ディスクを圧迫する(1回のベンチ走行で1GB超になることもある)。
+# ログをdeployのたびに空にする。nginxはファイルディスクリプタを保持したまま
+# truncateすれば書き込みを継続できるので再起動は不要。これをしないと
+# 直近のベンチ実行だけを対象にしたalp解析ができなくなる。
+# (MySQLスロークエリログのtruncateはdbホスト側のcommon/deploy_db.shが担当する)
 sudo truncate -s 0 /var/log/nginx/access.log
-sudo truncate -s 0 /var/log/mysql/mysql-slow.log
 
 # log permission
 sudo chmod -R 777 /var/log/nginx
-sudo chmod -R 777 /var/log/mysql
