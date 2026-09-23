@@ -59,24 +59,6 @@ func (r UserRanking) Less(i, j int) bool {
 	}
 }
 
-// userScoreRow is the per-user aggregate (reactions + tips across all of a
-// user's livestreams) used to build UserRanking without an O(N) per-user
-// round trip. Replaces two queries issued per row of `SELECT * FROM users`.
-type userScoreRow struct {
-	UserID    int64 `db:"user_id"`
-	Reactions int64 `db:"reactions"`
-	Tips      int64 `db:"tips"`
-}
-
-// livestreamScoreRow is the equivalent per-livestream aggregate for
-// LivestreamRanking, replacing two queries issued per row of
-// `SELECT * FROM livestreams`.
-type livestreamScoreRow struct {
-	LivestreamID int64 `db:"livestream_id"`
-	Reactions    int64 `db:"reactions"`
-	Tips         int64 `db:"tips"`
-}
-
 func getUserStatisticsHandler(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -105,50 +87,37 @@ func getUserStatisticsHandler(c echo.Context) error {
 	}
 
 	// ランク算出
-	// NOTE: 全ユーザーに対してN+1で reactions/tips を都度取得すると
-	// ユーザー数に比例したラウンドトリップが発生するため、集計クエリ1本にまとめる。
-	// スコア計算・タイブレーク・ソート・ランク算出ロジック自体は変更していない。
 	var users []*UserModel
 	if err := tx.SelectContext(ctx, &users, "SELECT * FROM users"); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get users: "+err.Error())
 	}
 
-	var scoreRows []userScoreRow
-	scoreQuery := `
-	SELECT u.id AS user_id,
-		IFNULL(r.reactions, 0) AS reactions,
-		IFNULL(t.tips, 0) AS tips
-	FROM users u
-	LEFT JOIN (
-		SELECT l.user_id AS user_id, COUNT(*) AS reactions
-		FROM livestreams l
-		INNER JOIN reactions r ON r.livestream_id = l.id
-		GROUP BY l.user_id
-	) r ON r.user_id = u.id
-	LEFT JOIN (
-		SELECT l.user_id AS user_id, SUM(l2.tip) AS tips
-		FROM livestreams l
-		INNER JOIN livecomments l2 ON l2.livestream_id = l.id
-		GROUP BY l.user_id
-	) t ON t.user_id = u.id`
-	if err := tx.SelectContext(ctx, &scoreRows, scoreQuery); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to aggregate user scores: "+err.Error())
-	}
-
-	usernameByID := make(map[int64]string, len(users))
-	for _, u := range users {
-		usernameByID[u.ID] = u.Name
-	}
-
 	var ranking UserRanking
-	for _, row := range scoreRows {
-		name, ok := usernameByID[row.UserID]
-		if !ok {
-			continue
+	for _, user := range users {
+		var reactions int64
+		query := `
+		SELECT COUNT(*) FROM users u
+		INNER JOIN livestreams l ON l.user_id = u.id
+		INNER JOIN reactions r ON r.livestream_id = l.id
+		WHERE u.id = ?`
+		if err := tx.GetContext(ctx, &reactions, query, user.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count reactions: "+err.Error())
 		}
+
+		var tips int64
+		query = `
+		SELECT IFNULL(SUM(l2.tip), 0) FROM users u
+		INNER JOIN livestreams l ON l.user_id = u.id	
+		INNER JOIN livecomments l2 ON l2.livestream_id = l.id
+		WHERE u.id = ?`
+		if err := tx.GetContext(ctx, &tips, query, user.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count tips: "+err.Error())
+		}
+
+		score := reactions + tips
 		ranking = append(ranking, UserRankingEntry{
-			Username: name,
-			Score:    row.Reactions + row.Tips,
+			Username: user.Name,
+			Score:    score,
 		})
 	}
 	sort.Sort(ranking)
@@ -164,8 +133,8 @@ func getUserStatisticsHandler(c echo.Context) error {
 
 	// リアクション数
 	var totalReactions int64
-	query := `SELECT COUNT(*) FROM users u
-    INNER JOIN livestreams l ON l.user_id = u.id
+	query := `SELECT COUNT(*) FROM users u 
+    INNER JOIN livestreams l ON l.user_id = u.id 
     INNER JOIN reactions r ON r.livestream_id = l.id
     WHERE u.name = ?
 	`
@@ -258,35 +227,28 @@ func getLivestreamStatisticsHandler(c echo.Context) error {
 		}
 	}
 
-	// ランク算出
-	// NOTE: 全配信に対してN+1で reactions/tips を都度取得すると配信数に比例した
-	// ラウンドトリップが発生するため、集計クエリ1本にまとめる。スコア計算・
-	// タイブレーク・ソート・ランク算出ロジック自体は変更していない。
-	var scoreRows []livestreamScoreRow
-	scoreQuery := `
-	SELECT l.id AS livestream_id,
-		IFNULL(r.reactions, 0) AS reactions,
-		IFNULL(t.tips, 0) AS tips
-	FROM livestreams l
-	LEFT JOIN (
-		SELECT livestream_id, COUNT(*) AS reactions
-		FROM reactions
-		GROUP BY livestream_id
-	) r ON r.livestream_id = l.id
-	LEFT JOIN (
-		SELECT livestream_id, SUM(tip) AS tips
-		FROM livecomments
-		GROUP BY livestream_id
-	) t ON t.livestream_id = l.id`
-	if err := tx.SelectContext(ctx, &scoreRows, scoreQuery); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to aggregate livestream scores: "+err.Error())
+	var livestreams []*LivestreamModel
+	if err := tx.SelectContext(ctx, &livestreams, "SELECT * FROM livestreams"); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestreams: "+err.Error())
 	}
 
+	// ランク算出
 	var ranking LivestreamRanking
-	for _, row := range scoreRows {
+	for _, livestream := range livestreams {
+		var reactions int64
+		if err := tx.GetContext(ctx, &reactions, "SELECT COUNT(*) FROM livestreams l INNER JOIN reactions r ON l.id = r.livestream_id WHERE l.id = ?", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count reactions: "+err.Error())
+		}
+
+		var totalTips int64
+		if err := tx.GetContext(ctx, &totalTips, "SELECT IFNULL(SUM(l2.tip), 0) FROM livestreams l INNER JOIN livecomments l2 ON l.id = l2.livestream_id WHERE l.id = ?", livestream.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to count tips: "+err.Error())
+		}
+
+		score := reactions + totalTips
 		ranking = append(ranking, LivestreamRankingEntry{
-			LivestreamID: row.LivestreamID,
-			Score:        row.Reactions + row.Tips,
+			LivestreamID: livestream.ID,
+			Score:        score,
 		})
 	}
 	sort.Sort(ranking)
