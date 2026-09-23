@@ -472,7 +472,17 @@ func getLivecommentReportsHandler(c echo.Context) error {
 	// fillLivecommentReportResponse経由でlivestreamを再取得するのはN+1になる。
 	// この関数は冒頭で既にlivestreamModelを取得済みなので、それを1回だけfillして
 	// 全件で使い回す(結果は元実装と同一)。
-	reports := make([]LivecommentReport, len(reportModels))
+	//
+	// NOTE: a report row can outlive the livecomment it points at -- moderateHandler
+	// deletes matching rows from `livecomments` by NG word but never touches
+	// `livecomment_reports` (no FK/cascade between them), so a report whose
+	// target comment was moderated away is a structurally expected, pre-existing
+	// state, not a fluke. fillLivecommentReportResponseWithLivestream's lookup of
+	// that livecomment then returns sql.ErrNoRows. Previously this propagated as a
+	// 500 for the entire request (aborting even the reports that were still
+	// valid); skip only the orphaned row and return the rest, since there's no
+	// well-defined way to render a report for a comment that no longer exists.
+	reports := make([]LivecommentReport, 0, len(reportModels))
 	if len(reportModels) > 0 {
 		livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
 		if err != nil {
@@ -481,9 +491,13 @@ func getLivecommentReportsHandler(c echo.Context) error {
 		for i := range reportModels {
 			report, err := fillLivecommentReportResponseWithLivestream(ctx, tx, *reportModels[i], livestream)
 			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					// Target livecomment was deleted by moderation; skip it.
+					continue
+				}
 				return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livecomment report: "+err.Error())
 			}
-			reports[i] = report
+			reports = append(reports, report)
 		}
 	}
 
