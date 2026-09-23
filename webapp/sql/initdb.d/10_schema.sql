@@ -11,18 +11,10 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
 -- プロフィール画像
--- icon_hash: sha256(image) in hex, computed once at write time (postIconHandler)
--- so fillUserResponse can select this small column instead of fetching the
--- full image BLOB and re-hashing it on every call. See iteration report for
--- the ~106k/run query volume this avoided. No seed data references this
--- table positionally (icons is truncated and repopulated purely by live
--- POST /api/icon calls each benchmark run), so it's safe to add directly
--- here rather than via a post-seed ALTER TABLE in init.sh.
 CREATE TABLE `icons` (
   `id` BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   `user_id` BIGINT NOT NULL,
-  `image` LONGBLOB NOT NULL,
-  `icon_hash` CHAR(64) NOT NULL DEFAULT ''
+  `image` LONGBLOB NOT NULL
 ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 
 -- ユーザごとのカスタムテーマ

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,26 +29,6 @@ const (
 )
 
 var fallbackImage = "../img/NoImage.jpg"
-
-// fallbackImageHash/fallbackImageHashOnce cache the fallback icon's sha256
-// hash across all requests instead of re-reading the file and re-hashing it
-// on every fillUserResponse call for users with no icon row.
-var (
-	fallbackImageHash     string
-	fallbackImageHashOnce sync.Once
-)
-
-func getFallbackImageHash() string {
-	fallbackImageHashOnce.Do(func() {
-		image, err := os.ReadFile(fallbackImage)
-		if err != nil {
-			return
-		}
-		sum := sha256.Sum256(image)
-		fallbackImageHash = fmt.Sprintf("%x", sum)
-	})
-	return fallbackImageHash
-}
 
 type UserModel struct {
 	ID             int64  `db:"id"`
@@ -165,13 +144,7 @@ func postIconHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to delete old user icon: "+err.Error())
 	}
 
-	// Compute and store the icon's hash once, at write time, instead of
-	// re-fetching the full image blob and re-hashing it on every
-	// fillUserResponse call (see icon_hash column + fillUserResponse below).
-	iconHashSum := sha256.Sum256(req.Image)
-	iconHash := fmt.Sprintf("%x", iconHashSum)
-
-	rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image, icon_hash) VALUES (?, ?, ?)", userID, req.Image, iconHash)
+	rs, err := tx.ExecContext(ctx, "INSERT INTO icons (user_id, image) VALUES (?, ?)", userID, req.Image)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert new user icon: "+err.Error())
 	}
@@ -431,20 +404,17 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 		return User{}, err
 	}
 
-	// NOTE: previously this fetched the full image BLOB and hashed it with
-	// sha256.Sum256 on every call (this function is called once per embedded
-	// user in many list responses -- livestream owner, livecomment
-	// author/reporter, reaction user -- tens of thousands of times per
-	// benchmark run). icon_hash is now precomputed and stored at write time
-	// in postIconHandler, so we only need to select the small stored hash
-	// instead of transferring+hashing the whole image every time.
-	var iconHash string
-	if err := tx.GetContext(ctx, &iconHash, "SELECT icon_hash FROM icons WHERE user_id = ?", userModel.ID); err != nil {
+	var image []byte
+	if err := tx.GetContext(ctx, &image, "SELECT image FROM icons WHERE user_id = ?", userModel.ID); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return User{}, err
 		}
-		iconHash = getFallbackImageHash()
+		image, err = os.ReadFile(fallbackImage)
+		if err != nil {
+			return User{}, err
+		}
 	}
+	iconHash := sha256.Sum256(image)
 
 	user := User{
 		ID:          userModel.ID,
@@ -455,7 +425,7 @@ func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (Us
 			ID:       themeModel.ID,
 			DarkMode: themeModel.DarkMode,
 		},
-		IconHash: iconHash,
+		IconHash: fmt.Sprintf("%x", iconHash),
 	}
 
 	return user, nil
