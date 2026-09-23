@@ -468,13 +468,23 @@ func getLivecommentReportsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livecomment reports: "+err.Error())
 	}
 
+	// NOTE: 全reportは同一livestream_id(パスパラメータ)に属するため、件数分
+	// fillLivecommentReportResponse経由でlivestreamを再取得するのはN+1になる。
+	// この関数は冒頭で既にlivestreamModelを取得済みなので、それを1回だけfillして
+	// 全件で使い回す(結果は元実装と同一)。
 	reports := make([]LivecommentReport, len(reportModels))
-	for i := range reportModels {
-		report, err := fillLivecommentReportResponse(ctx, tx, *reportModels[i])
+	if len(reportModels) > 0 {
+		livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livecomment report: "+err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livestream: "+err.Error())
 		}
-		reports[i] = report
+		for i := range reportModels {
+			report, err := fillLivecommentReportResponseWithLivestream(ctx, tx, *reportModels[i], livestream)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livecomment report: "+err.Error())
+			}
+			reports[i] = report
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

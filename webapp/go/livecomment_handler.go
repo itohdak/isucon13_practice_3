@@ -473,6 +473,25 @@ func fillLivecommentResponseWithLivestream(ctx context.Context, tx *sqlx.Tx, liv
 }
 
 func fillLivecommentReportResponse(ctx context.Context, tx *sqlx.Tx, reportModel LivecommentReportModel) (LivecommentReport, error) {
+	livestreamModel := LivestreamModel{}
+	if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", reportModel.LivestreamID); err != nil {
+		return LivecommentReport{}, err
+	}
+	livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
+	if err != nil {
+		return LivecommentReport{}, err
+	}
+
+	return fillLivecommentReportResponseWithLivestream(ctx, tx, reportModel, livestream)
+}
+
+// fillLivecommentReportResponseWithLivestream is fillLivecommentReportResponse
+// but takes an already-filled Livestream instead of re-fetching/re-filling it
+// from reportModel.LivestreamID every call. Used by
+// getLivecommentReportsHandler, where every returned row shares the same
+// livestream_id, to avoid an N+1 re-fetch of identical livestream data (same
+// pattern as fillLivecommentResponseWithLivestream/fillReactionResponseWithLivestream).
+func fillLivecommentReportResponseWithLivestream(ctx context.Context, tx *sqlx.Tx, reportModel LivecommentReportModel, livestream Livestream) (LivecommentReport, error) {
 	reporterModel := UserModel{}
 	if err := tx.GetContext(ctx, &reporterModel, "SELECT * FROM users WHERE id = ?", reportModel.UserID); err != nil {
 		return LivecommentReport{}, err
@@ -486,7 +505,7 @@ func fillLivecommentReportResponse(ctx context.Context, tx *sqlx.Tx, reportModel
 	if err := tx.GetContext(ctx, &livecommentModel, "SELECT * FROM livecomments WHERE id = ?", reportModel.LivecommentID); err != nil {
 		return LivecommentReport{}, err
 	}
-	livecomment, err := fillLivecommentResponse(ctx, tx, livecommentModel)
+	livecomment, err := fillLivecommentResponseWithLivestream(ctx, tx, livecommentModel, livestream)
 	if err != nil {
 		return LivecommentReport{}, err
 	}
