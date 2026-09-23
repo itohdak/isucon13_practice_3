@@ -66,14 +66,29 @@ func getReactionsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "failed to get reactions")
 	}
 
+	// NOTE: このハンドラが返すreactionは全て同一のlivestream_id(パスパラメータ)に
+	// 属するため、リアクション1件ごとにfillReactionResponse経由でlivestreamを
+	// 再取得するのはN+1になる。1件でも存在する場合に限り配信情報を1回だけ取得・
+	// 構築して使い回す(結果は元実装と同一)。
 	reactions := make([]Reaction, len(reactionModels))
-	for i := range reactionModels {
-		reaction, err := fillReactionResponse(ctx, tx, reactionModels[i])
+	if len(reactionModels) > 0 {
+		livestreamModel := LivestreamModel{}
+		if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livestreamID); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestream: "+err.Error())
+		}
+		livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livestream: "+err.Error())
 		}
 
-		reactions[i] = reaction
+		for i := range reactionModels {
+			reaction, err := fillReactionResponseWithLivestream(ctx, tx, reactionModels[i], livestream)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
+			}
+
+			reactions[i] = reaction
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -142,20 +157,29 @@ func postReactionHandler(c echo.Context) error {
 }
 
 func fillReactionResponse(ctx context.Context, tx *sqlx.Tx, reactionModel ReactionModel) (Reaction, error) {
-	userModel := UserModel{}
-	if err := tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", reactionModel.UserID); err != nil {
-		return Reaction{}, err
-	}
-	user, err := fillUserResponse(ctx, tx, userModel)
-	if err != nil {
-		return Reaction{}, err
-	}
-
 	livestreamModel := LivestreamModel{}
 	if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", reactionModel.LivestreamID); err != nil {
 		return Reaction{}, err
 	}
 	livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
+	if err != nil {
+		return Reaction{}, err
+	}
+
+	return fillReactionResponseWithLivestream(ctx, tx, reactionModel, livestream)
+}
+
+// fillReactionResponseWithLivestream is fillReactionResponse but takes an
+// already-filled Livestream instead of re-fetching/re-filling it from
+// reactionModel.LivestreamID every call. Used by getReactionsHandler, where
+// every returned row shares the same livestream_id, to avoid an N+1 re-fetch
+// of identical livestream data.
+func fillReactionResponseWithLivestream(ctx context.Context, tx *sqlx.Tx, reactionModel ReactionModel, livestream Livestream) (Reaction, error) {
+	userModel := UserModel{}
+	if err := tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", reactionModel.UserID); err != nil {
+		return Reaction{}, err
+	}
+	user, err := fillUserResponse(ctx, tx, userModel)
 	if err != nil {
 		return Reaction{}, err
 	}

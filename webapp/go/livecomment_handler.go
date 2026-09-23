@@ -102,14 +102,30 @@ func getLivecommentsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livecomments: "+err.Error())
 	}
 
+	// NOTE: このハンドラが返すlivecommentは全て同一のlivestream_id(パスパラメータ)に
+	// 属するため、コメント1件ごとにfillLivecommentResponse経由でlivestream(配信者情報・
+	// アイコン・タグ含む)を再取得するのはN+1になる。該当livestreamが1件でも存在する
+	// (=livecommentModelsが空でない)場合に限り、その配信情報を1回だけ取得・構築して
+	// 全件で使い回す(結果は元実装と同一、クエリ回数のみ削減)。
 	livecomments := make([]Livecomment, len(livecommentModels))
-	for i := range livecommentModels {
-		livecomment, err := fillLivecommentResponse(ctx, tx, livecommentModels[i])
+	if len(livecommentModels) > 0 {
+		livestreamModel := LivestreamModel{}
+		if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livestreamID); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestream: "+err.Error())
+		}
+		livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
 		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fil livecomments: "+err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livestream: "+err.Error())
 		}
 
-		livecomments[i] = livecomment
+		for i := range livecommentModels {
+			livecomment, err := fillLivecommentResponseWithLivestream(ctx, tx, livecommentModels[i], livestream)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "failed to fil livecomments: "+err.Error())
+			}
+
+			livecomments[i] = livecomment
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -417,20 +433,29 @@ func moderateHandler(c echo.Context) error {
 }
 
 func fillLivecommentResponse(ctx context.Context, tx *sqlx.Tx, livecommentModel LivecommentModel) (Livecomment, error) {
-	commentOwnerModel := UserModel{}
-	if err := tx.GetContext(ctx, &commentOwnerModel, "SELECT * FROM users WHERE id = ?", livecommentModel.UserID); err != nil {
-		return Livecomment{}, err
-	}
-	commentOwner, err := fillUserResponse(ctx, tx, commentOwnerModel)
-	if err != nil {
-		return Livecomment{}, err
-	}
-
 	livestreamModel := LivestreamModel{}
 	if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livecommentModel.LivestreamID); err != nil {
 		return Livecomment{}, err
 	}
 	livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
+	if err != nil {
+		return Livecomment{}, err
+	}
+
+	return fillLivecommentResponseWithLivestream(ctx, tx, livecommentModel, livestream)
+}
+
+// fillLivecommentResponseWithLivestream is fillLivecommentResponse but takes an
+// already-filled Livestream instead of re-fetching/re-filling it (owner user,
+// icon hash, tags) from livecommentModel.LivestreamID every call. Used by
+// getLivecommentsHandler, where every returned row shares the same
+// livestream_id, to avoid an N+1 re-fetch of identical livestream data.
+func fillLivecommentResponseWithLivestream(ctx context.Context, tx *sqlx.Tx, livecommentModel LivecommentModel, livestream Livestream) (Livecomment, error) {
+	commentOwnerModel := UserModel{}
+	if err := tx.GetContext(ctx, &commentOwnerModel, "SELECT * FROM users WHERE id = ?", livecommentModel.UserID); err != nil {
+		return Livecomment{}, err
+	}
+	commentOwner, err := fillUserResponse(ctx, tx, commentOwnerModel)
 	if err != nil {
 		return Livecomment{}, err
 	}
