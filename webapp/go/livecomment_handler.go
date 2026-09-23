@@ -387,29 +387,23 @@ func moderateHandler(c echo.Context) error {
 	}
 
 	// NGワードにヒットする過去の投稿も全削除する
+	// NOTE: 元実装は対象livestreamに関係なく全livecommentsを毎回SELECTし(N+1)、
+	// 1件ずつ「自己結合によるLIKE評価」をGo側からDELETE文で1件ずつ発行していた
+	// (NGワード数 x 全livecomment数のラウンドトリップ)。DELETEの削除条件
+	// (対象livestreamのコメントであること・commentがNGワードにLIKE一致すること)
+	// 自体は変えず、対象livestreamの投稿だけを1クエリで一括削除するように変更。
+	// `comment LIKE CONCAT('%', ?, '%')` は元の自己結合によるLIKE評価
+	// (texts.text LIKE patterns.pattern、texts.text=comment固定値)と同じ比較を
+	// MySQL側でカラム参照として直接行うだけなので、削除される行集合は元実装と同一。
 	for _, ngword := range ngwords {
-		// ライブコメント一覧取得
-		var livecomments []*LivecommentModel
-		if err := tx.SelectContext(ctx, &livecomments, "SELECT * FROM livecomments"); err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livecomments: "+err.Error())
-		}
-
-		for _, livecomment := range livecomments {
-			query := `
-			DELETE FROM livecomments
-			WHERE
-			id = ? AND
-			livestream_id = ? AND
-			(SELECT COUNT(*)
-			FROM
-			(SELECT ? AS text) AS texts
-			INNER JOIN
-			(SELECT CONCAT('%', ?, '%')	AS pattern) AS patterns
-			ON texts.text LIKE patterns.pattern) >= 1;
-			`
-			if _, err := tx.ExecContext(ctx, query, livecomment.ID, livestreamID, livecomment.Comment, ngword.Word); err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "failed to delete old livecomments that hit spams: "+err.Error())
-			}
+		query := `
+		DELETE FROM livecomments
+		WHERE
+		livestream_id = ? AND
+		comment LIKE CONCAT('%', ?, '%')
+		`
+		if _, err := tx.ExecContext(ctx, query, livestreamID, ngword.Word); err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to delete old livecomments that hit spams: "+err.Error())
 		}
 	}
 
