@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,29 +107,12 @@ func getIconHandler(c echo.Context) error {
 	var image []byte
 	if err := tx.GetContext(ctx, &image, "SELECT image FROM icons WHERE user_id = ?", user.ID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			image, err = os.ReadFile(fallbackImage)
-			if err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "failed to read fallback image: "+err.Error())
-			}
+			return c.File(fallbackImage)
 		} else {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get user icon: "+err.Error())
 		}
 	}
 
-	// 条件付きGETリクエスト(If-None-Matchヘッダ)が付与されており、かつ送信された
-	// 値がアイコン画像のSHA256値(他APIのicon_hashと同じ計算方法)と一致する場合に
-	// 限り304を返す(マニュアルでMAY)。それ以外(ヘッダなし、または不一致)は
-	// 必ず200で画像本体を返す(マニュアルでMUST NOT 304 unconditional GET /
-	// MUST 200 on mismatch)。DBから都度画像を取得してハッシュ計算するため、
-	// アイコン更新の反映(2秒以内、マニュアルMUST)もそのまま満たされる。
-	iconHash := fmt.Sprintf("%x", sha256.Sum256(image))
-	if inm := c.Request().Header.Get("If-None-Match"); inm != "" {
-		if strings.Trim(inm, `"`) == iconHash {
-			return c.NoContent(http.StatusNotModified)
-		}
-	}
-
-	c.Response().Header().Set("ETag", fmt.Sprintf("%q", iconHash))
 	return c.Blob(http.StatusOK, "image/jpeg", image)
 }
 
