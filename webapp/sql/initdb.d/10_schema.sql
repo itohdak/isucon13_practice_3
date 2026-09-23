@@ -119,3 +119,10 @@ CREATE INDEX idx_start_end ON reservation_slots(start_at, end_at);
 CREATE INDEX idx_user_id ON livestreams(user_id);
 CREATE INDEX idx_livestream_id ON livecomment_reports(livestream_id);
 CREATE INDEX idx_livestream_id ON livestream_viewers_history(livestream_id);
+-- Added in a later session (2026-09-24): ng_words(user_id, livestream_id)
+-- above doesn't help `SELECT * FROM ng_words WHERE livestream_id = ?`
+-- (moderateHandler's re-check-all-comments-against-all-ngwords query) since
+-- livestream_id isn't the composite index's leading column -- EXPLAIN showed
+-- type=ALL/possible_keys=NULL, a full ~14k-row scan on every call. Confirmed
+-- via SQL Agent + EXPLAIN before adding.
+CREATE INDEX idx_livestream_id ON ng_words(livestream_id);
