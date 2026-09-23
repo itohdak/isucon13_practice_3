@@ -1,0 +1,48 @@
+# Secrets and local machine state
+.ssh/
+.local.env
+env.sh
+*.pem
+*.key
+*.crt
+
+# Toolchains and caches
+local/
+.cache/
+.cargo/
+.rustup/
+.npm/
+.cpanm/
+.perl-cpm/
+.bundle/
+.config/
+.local/
+.ansible/tmp/
+
+# Generated dependencies and build outputs
+webapp/node/node_modules/
+webapp/python/.venv/
+webapp/rust/target/
+webapp/php/vendor/
+webapp/go/isupipe
+
+# Runtime and generated files
+bench
+pprotein
+pprotein-agent
+*.log
+*.pid
+__pycache__/
+.pytest_cache/
+.DS_Store
+
+# Home directory files not managed for tuning
+.bash_logout
+.bash_history
+.bashrc
+.gitconfig
+.lesshst
+.profile
+.zshrc
+.x
+go/
