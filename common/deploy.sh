@@ -42,10 +42,19 @@ fi
 bash /home/isucon/webapp/pdns/init_zone.sh
 
 # ミドルウェア・Appの再起動
+sudo systemctl daemon-reload
 sudo systemctl restart mysql
 sudo systemctl restart nginx
 sudo systemctl restart pdns
 sudo systemctl restart ${APP_NAME}-go.service
+
+# ログをdeployのたびに空にする。nginx/mysqlはファイルディスクリプタを保持したまま
+# truncateすれば書き込みを継続できるので再起動は不要。これをしないとslow
+# queryログ(long_query_time=0で全クエリ記録)が起動からの累積になり、
+# (1) 直近のベンチ実行だけを対象にした alp/slp 解析ができなくなる、
+# (2) ディスクを圧迫する(1回のベンチ走行で1GB超になることもある)。
+sudo truncate -s 0 /var/log/nginx/access.log
+sudo truncate -s 0 /var/log/mysql/mysql-slow.log
 
 # log permission
 sudo chmod -R 777 /var/log/nginx
