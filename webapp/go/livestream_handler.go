@@ -499,16 +499,37 @@ func fillLivestreamResponse(ctx context.Context, tx *sqlx.Tx, livestreamModel Li
 		return Livestream{}, err
 	}
 
+	// NOTE: 元実装はタグ1件ごとに`SELECT * FROM tags WHERE id = ?`を発行していた
+	// (タグ数分のN+1)。tag_idをまとめて1クエリで取得し、Go側でlivestreamTagModelsの
+	// 順序(=元の並び順)通りに組み立て直すことで、返すタグの内容・順序を変えずに
+	// ラウンドトリップ数だけを削減する。
 	tags := make([]Tag, len(livestreamTagModels))
-	for i := range livestreamTagModels {
-		tagModel := TagModel{}
-		if err := tx.GetContext(ctx, &tagModel, "SELECT * FROM tags WHERE id = ?", livestreamTagModels[i].TagID); err != nil {
+	if len(livestreamTagModels) > 0 {
+		tagIDs := make([]int64, len(livestreamTagModels))
+		for i, livestreamTagModel := range livestreamTagModels {
+			tagIDs[i] = livestreamTagModel.TagID
+		}
+
+		query, params, err := sqlx.In("SELECT * FROM tags WHERE id IN (?)", tagIDs)
+		if err != nil {
+			return Livestream{}, err
+		}
+		var tagModels []*TagModel
+		if err := tx.SelectContext(ctx, &tagModels, query, params...); err != nil {
 			return Livestream{}, err
 		}
 
-		tags[i] = Tag{
-			ID:   tagModel.ID,
-			Name: tagModel.Name,
+		tagByID := make(map[int64]*TagModel, len(tagModels))
+		for _, tagModel := range tagModels {
+			tagByID[tagModel.ID] = tagModel
+		}
+		for i, livestreamTagModel := range livestreamTagModels {
+			if tagModel, ok := tagByID[livestreamTagModel.TagID]; ok {
+				tags[i] = Tag{
+					ID:   tagModel.ID,
+					Name: tagModel.Name,
+				}
+			}
 		}
 	}
 
