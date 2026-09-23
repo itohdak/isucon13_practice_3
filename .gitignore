@@ -45,4 +45,4 @@ __pycache__/
 .profile
 .zshrc
 .x
-go/
+/go/
