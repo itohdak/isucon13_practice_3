@@ -104,3 +104,18 @@ CREATE TABLE `reactions` (
   `emoji_name` VARCHAR(255) NOT NULL,
   `created_at` BIGINT NOT NULL
 ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+-- Performance indexes added 2026-09-23 (iteration 1): every FK-style lookup
+-- column below was previously unindexed, forcing full table scans on hot
+-- paths (stats ranking N+1, livestream tag lookups, icon/theme lookups,
+-- reservation slot booking). See reports/iterations/ for evidence.
+CREATE INDEX idx_livestream_id ON livestream_tags(livestream_id);
+CREATE INDEX idx_tag_id ON livestream_tags(tag_id);
+CREATE INDEX idx_user_id ON icons(user_id);
+CREATE INDEX idx_user_id ON themes(user_id);
+CREATE INDEX idx_livestream_id ON livecomments(livestream_id);
+CREATE INDEX idx_livestream_id ON reactions(livestream_id);
+CREATE INDEX idx_user_livestream ON ng_words(user_id, livestream_id);
+CREATE INDEX idx_start_end ON reservation_slots(start_at, end_at);
+CREATE INDEX idx_user_id ON livestreams(user_id);
+CREATE INDEX idx_livestream_id ON livecomment_reports(livestream_id);
+CREATE INDEX idx_livestream_id ON livestream_viewers_history(livestream_id);
