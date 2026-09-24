@@ -197,13 +197,42 @@ func searchLivestreamsHandler(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get keyTaggedLivestreams: "+err.Error())
 		}
 
-		for _, keyTaggedLivestream := range keyTaggedLivestreams {
-			ls := LivestreamModel{}
-			if err := tx.GetContext(ctx, &ls, "SELECT * FROM livestreams WHERE id = ?", keyTaggedLivestream.LivestreamID); err != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestreams: "+err.Error())
+		if len(keyTaggedLivestreams) > 0 {
+			// NOTE: 元々は keyTaggedLivestreams の各行に対して1件ずつ
+			// SELECT * FROM livestreams WHERE id = ? を発行していた (N+1)。
+			// 対象livestream_idの重複を除いた上で1回のIN検索にまとめ、
+			// 元のkeyTaggedLivestreamsの順序（ORDER BY livestream_id DESC、
+			// 重複含む）どおりに結果を並べ直すことで、返却される順序・
+			// 重複行の有無を完全に維持したままクエリ数だけを削減する。
+			idSet := make(map[int64]struct{}, len(keyTaggedLivestreams))
+			var uniqueIDs []int64
+			for _, keyTaggedLivestream := range keyTaggedLivestreams {
+				if _, ok := idSet[keyTaggedLivestream.LivestreamID]; !ok {
+					idSet[keyTaggedLivestream.LivestreamID] = struct{}{}
+					uniqueIDs = append(uniqueIDs, keyTaggedLivestream.LivestreamID)
+				}
 			}
 
-			livestreamModels = append(livestreamModels, &ls)
+			query, params, err := sqlx.In("SELECT * FROM livestreams WHERE id IN (?)", uniqueIDs)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "failed to construct IN query: "+err.Error())
+			}
+			var fetchedLivestreams []*LivestreamModel
+			if err := tx.SelectContext(ctx, &fetchedLivestreams, query, params...); err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestreams: "+err.Error())
+			}
+			livestreamByID := make(map[int64]*LivestreamModel, len(fetchedLivestreams))
+			for _, ls := range fetchedLivestreams {
+				livestreamByID[ls.ID] = ls
+			}
+
+			for _, keyTaggedLivestream := range keyTaggedLivestreams {
+				ls, ok := livestreamByID[keyTaggedLivestream.LivestreamID]
+				if !ok {
+					return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestreams: livestream not found for id "+strconv.FormatInt(keyTaggedLivestream.LivestreamID, 10))
+				}
+				livestreamModels = append(livestreamModels, ls)
+			}
 		}
 	} else {
 		// 検索条件なし
