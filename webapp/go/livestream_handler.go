@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -542,63 +540,6 @@ func getLivecommentReportsHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, reports)
 }
 
-// Caches for the tag data behind every Livestream response. `tags` is loaded once from
-// initial_tags.sql and never written by any handler; `livestream_tags` rows are inserted only
-// by reserveLivestreamHandler (in the same transaction that inserts the livestream) and never
-// updated/deleted, so once a livestream's tag list has been read it cannot change.
-// Empty lists are never cached. Cleared by initializeHandler (via clearUserCaches).
-var (
-	livestreamTagsCache sync.Map // int64 (livestream id) -> []Tag (insertion order, duplicates preserved)
-	tagTableCache       sync.Map // int64 (tag id) -> Tag
-	tagTableLoaded      atomic.Bool
-)
-
-func loadTagTable(ctx context.Context, tx ctxSelecter) error {
-	var tagModels []*TagModel
-	if err := tx.SelectContext(ctx, &tagModels, "SELECT * FROM tags"); err != nil {
-		return err
-	}
-	for _, tagModel := range tagModels {
-		tagTableCache.Store(tagModel.ID, Tag{ID: tagModel.ID, Name: tagModel.Name})
-	}
-	tagTableLoaded.Store(true)
-	return nil
-}
-
-// ctxSelecter is satisfied by both *sqlx.Tx and *sqlx.DB.
-type ctxSelecter interface {
-	SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
-}
-
-// getLivestreamTags returns the livestream's tags in livestream_tags insertion order (same order
-// and duplicates as `SELECT * FROM livestream_tags WHERE livestream_id = ?`); a tag id missing from
-// `tags` yields the zero Tag at that position, exactly like the previous per-request implementation.
-func getLivestreamTags(ctx context.Context, tx ctxSelecter, livestreamID int64) ([]Tag, error) {
-	if v, ok := livestreamTagsCache.Load(livestreamID); ok {
-		return v.([]Tag), nil
-	}
-	var livestreamTagModels []*LivestreamTagModel
-	if err := tx.SelectContext(ctx, &livestreamTagModels, "SELECT * FROM livestream_tags WHERE livestream_id = ?", livestreamID); err != nil {
-		return nil, err
-	}
-	tags := make([]Tag, len(livestreamTagModels))
-	if len(livestreamTagModels) == 0 {
-		return tags, nil
-	}
-	if !tagTableLoaded.Load() {
-		if err := loadTagTable(ctx, tx); err != nil {
-			return nil, err
-		}
-	}
-	for i, livestreamTagModel := range livestreamTagModels {
-		if v, ok := tagTableCache.Load(livestreamTagModel.TagID); ok {
-			tags[i] = v.(Tag)
-		}
-	}
-	actual, _ := livestreamTagsCache.LoadOrStore(livestreamID, tags)
-	return actual.([]Tag), nil
-}
-
 func fillLivestreamResponse(ctx context.Context, tx *sqlx.Tx, livestreamModel LivestreamModel) (Livestream, error) {
 	ownerModel, err := getUserModelByID(ctx, tx, livestreamModel.UserID)
 	if err != nil {
@@ -609,9 +550,43 @@ func fillLivestreamResponse(ctx context.Context, tx *sqlx.Tx, livestreamModel Li
 		return Livestream{}, err
 	}
 
-	tags, err := getLivestreamTags(ctx, tx, livestreamModel.ID)
-	if err != nil {
+	var livestreamTagModels []*LivestreamTagModel
+	if err := tx.SelectContext(ctx, &livestreamTagModels, "SELECT * FROM livestream_tags WHERE livestream_id = ?", livestreamModel.ID); err != nil {
 		return Livestream{}, err
+	}
+
+	// NOTE: 元実装はタグ1件ごとに`SELECT * FROM tags WHERE id = ?`を発行していた
+	// (タグ数分のN+1)。tag_idをまとめて1クエリで取得し、Go側でlivestreamTagModelsの
+	// 順序(=元の並び順)通りに組み立て直すことで、返すタグの内容・順序を変えずに
+	// ラウンドトリップ数だけを削減する。
+	tags := make([]Tag, len(livestreamTagModels))
+	if len(livestreamTagModels) > 0 {
+		tagIDs := make([]int64, len(livestreamTagModels))
+		for i, livestreamTagModel := range livestreamTagModels {
+			tagIDs[i] = livestreamTagModel.TagID
+		}
+
+		query, params, err := sqlx.In("SELECT * FROM tags WHERE id IN (?)", tagIDs)
+		if err != nil {
+			return Livestream{}, err
+		}
+		var tagModels []*TagModel
+		if err := tx.SelectContext(ctx, &tagModels, query, params...); err != nil {
+			return Livestream{}, err
+		}
+
+		tagByID := make(map[int64]*TagModel, len(tagModels))
+		for _, tagModel := range tagModels {
+			tagByID[tagModel.ID] = tagModel
+		}
+		for i, livestreamTagModel := range livestreamTagModels {
+			if tagModel, ok := tagByID[livestreamTagModel.TagID]; ok {
+				tags[i] = Tag{
+					ID:   tagModel.ID,
+					Name: tagModel.Name,
+				}
+			}
+		}
 	}
 
 	livestream := Livestream{

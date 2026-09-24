@@ -503,8 +503,7 @@ var (
 )
 
 func clearUserCaches() {
-	tagTableLoaded.Store(false)
-	for _, m := range []*sync.Map{&userModelCache, &themeModelCache, &iconHashCache, &iconImageCache, &userByNameCache, &livestreamTagsCache, &tagTableCache} {
+	for _, m := range []*sync.Map{&userModelCache, &themeModelCache, &iconHashCache, &iconImageCache, &userByNameCache} {
 		m.Range(func(k, _ any) bool { m.Delete(k); return true })
 	}
 }
