@@ -76,3 +76,13 @@ long_query_time = 0
 max_binlog_size   = 100M
 # binlog_do_db		= include_database_name
 # binlog_ignore_db	= include_database_name
+
+# --- ISUCON13 tuning (iteration 3, second session) ---
+# Commit-path cost reduction on the (CPU-saturated) dedicated DB host.
+# No replication is used, so the binary log is pure overhead (extra write+fsync per commit).
+disable_log_bin
+# Flush redo log to the OS on every commit but fsync only about once per second.
+# Data still survives a clean server reboot (contest re-verification reboots cleanly);
+# only a power loss / kernel crash could lose the last ~1s of commits.
+innodb_flush_log_at_trx_commit = 2
+innodb_flush_method = O_DIRECT
