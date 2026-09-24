@@ -192,7 +192,7 @@ func main() {
 	// echo access logger removed: nginx LTSV access.log already records every request (with reqtime/apptime); this was ~4% of s1 CPU in journald plus formatting
 	cookieStore := sessions.NewCookieStore(secret)
 	cookieStore.Options.Domain = "*.u.isucon.local"
-	e.Use(session.Middleware(cookieStore))
+	e.Use(session.Middleware(newMemoStore(cookieStore))) // memoises successful cookie decodes (see session_cache.go)
 	// e.Use(middleware.Recover())
 
 	// 初期化
