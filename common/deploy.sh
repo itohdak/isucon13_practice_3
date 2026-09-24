@@ -38,16 +38,15 @@ else
   ${GO} build -o ${APP_NAME} .
 fi
 
-# DNSゾーン再適用(PowerDNSはこのホストで動くが、バックエンドのisudns DBは
-# 別ホスト(db host)にある。gmysql-host の向き先は etc/ 配下の
-# powerdns/pdns.d/gmysql-host.conf で管理する)
+# DNSゾーン再適用。PowerDNS本体もisudns DBもDNSホスト(s3)にあり、このホストでは
+# pdns_serverを動かさない。pdnsutilはetc/powerdns/pdns.d/gmysql-host.confの向き先(s3)
+# のDBへ直接書き込む
 bash /home/isucon/webapp/pdns/init_zone.sh
 
 # ミドルウェア・Appの再起動。MySQLはこのホストでは動かない(dbホストに分離済み、
 # common/deploy_db.sh参照)ため、ここではmysqlに触れない。
 sudo systemctl daemon-reload
 sudo systemctl restart nginx
-sudo systemctl restart pdns
 sudo systemctl restart ${APP_NAME}-go.service
 
 # ログをdeployのたびに空にする。nginxはファイルディスクリプタを保持したまま

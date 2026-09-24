@@ -151,8 +151,14 @@ func rotateLogs() {
 		run("sudo", "truncate", "-s", "0", slowLog)
 		return
 	}
-	run("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=3",
-		"isucon@"+dbHost, "sudo truncate -s 0 "+slowLog)
+	dnsHost := os.Getenv("ISUCON13_DNS_HOST")
+	if dnsHost == "" {
+		dnsHost = "192.168.0.13"
+	}
+	for _, h := range []string{dbHost, dnsHost} {
+		run("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=3",
+			"isucon@"+h, "sudo truncate -s 0 "+slowLog)
+	}
 }
 
 func collectPprotein() {
@@ -162,7 +168,7 @@ func collectPprotein() {
 
 	url := os.Getenv("PPROTEIN_COLLECT_URL")
 	if url == "" {
-		url = "http://s3:9000/api/group/collect"
+		url = "http://s4:9000/api/group/collect"
 	}
 
 	go func() {
