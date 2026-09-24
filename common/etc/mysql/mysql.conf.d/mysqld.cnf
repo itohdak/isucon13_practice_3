@@ -86,3 +86,12 @@ disable_log_bin
 # only a power loss / kernel crash could lose the last ~1s of commits.
 innodb_flush_log_at_trx_commit = 2
 innodb_flush_method = O_DIRECT
+
+# --- ISUCON13 tuning (iteration 4, second session) ---
+# performance_schema instrumentation costs CPU on every statement; nothing here reads it
+# (slow log + SHOW STATUS are the observability sources, both unaffected).
+performance_schema = OFF
+# Working set is small, but the default 128M pool / 48M redo are stock sizes; give headroom
+# on the 3.6GB host (mysqld is the only big process there).
+innodb_buffer_pool_size = 1G
+innodb_redo_log_capacity = 1G
