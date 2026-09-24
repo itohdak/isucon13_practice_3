@@ -153,7 +153,7 @@ func collectPprotein() {
 func main() {
 	go standalone.Integrate(":8888")
 	e := echo.New()
-	e.Debug = true
+	e.Debug = false // true makes echo indent every JSON response (5% of app CPU in pprof)
 	e.Logger.SetLevel(echolog.DEBUG)
 	e.Use(middleware.Logger())
 	cookieStore := sessions.NewCookieStore(secret)
