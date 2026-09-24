@@ -15,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
-	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"golang.org/x/crypto/bcrypt"
@@ -417,6 +416,13 @@ func computeIconHash(image []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(image))
 }
 
+// dbq is the read interface shared by *sqlx.Tx and *sqlx.DB, so read-only handlers can call the
+// fill* helpers without opening a transaction (each helper only issues single-statement reads).
+type dbq interface {
+	GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+	SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+}
+
 // ctxGetter is satisfied by both *sqlx.Tx and *sqlx.DB.
 type ctxGetter interface {
 	GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
@@ -508,7 +514,7 @@ func clearUserCaches() {
 	}
 }
 
-func getUserModelByID(ctx context.Context, tx *sqlx.Tx, userID int64) (UserModel, error) {
+func getUserModelByID(ctx context.Context, tx dbq, userID int64) (UserModel, error) {
 	if v, ok := userModelCache.Load(userID); ok {
 		return v.(UserModel), nil
 	}
@@ -520,7 +526,7 @@ func getUserModelByID(ctx context.Context, tx *sqlx.Tx, userID int64) (UserModel
 	return userModel, nil
 }
 
-func getThemeModel(ctx context.Context, tx *sqlx.Tx, userID int64) (ThemeModel, error) {
+func getThemeModel(ctx context.Context, tx dbq, userID int64) (ThemeModel, error) {
 	if v, ok := themeModelCache.Load(userID); ok {
 		return v.(ThemeModel), nil
 	}
@@ -532,7 +538,7 @@ func getThemeModel(ctx context.Context, tx *sqlx.Tx, userID int64) (ThemeModel, 
 	return themeModel, nil
 }
 
-func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (User, error) {
+func fillUserResponse(ctx context.Context, tx dbq, userModel UserModel) (User, error) {
 	themeModel, err := getThemeModel(ctx, tx, userModel.ID)
 	if err != nil {
 		return User{}, err

@@ -540,7 +540,7 @@ func getLivecommentReportsHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, reports)
 }
 
-func fillLivestreamResponse(ctx context.Context, tx *sqlx.Tx, livestreamModel LivestreamModel) (Livestream, error) {
+func fillLivestreamResponse(ctx context.Context, tx dbq, livestreamModel LivestreamModel) (Livestream, error) {
 	ownerModel, err := getUserModelByID(ctx, tx, livestreamModel.UserID)
 	if err != nil {
 		return Livestream{}, err

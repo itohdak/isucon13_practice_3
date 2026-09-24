@@ -46,12 +46,6 @@ func getReactionsHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "livestream_id in path must be integer")
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
-	}
-	defer tx.Rollback()
-
 	query := "SELECT * FROM reactions WHERE livestream_id = ? ORDER BY created_at DESC"
 	if c.QueryParam("limit") != "" {
 		limit, err := strconv.Atoi(c.QueryParam("limit"))
@@ -62,7 +56,7 @@ func getReactionsHandler(c echo.Context) error {
 	}
 
 	reactionModels := []ReactionModel{}
-	if err := tx.SelectContext(ctx, &reactionModels, query, livestreamID); err != nil {
+	if err := dbConn.SelectContext(ctx, &reactionModels, query, livestreamID); err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "failed to get reactions")
 	}
 
@@ -73,16 +67,16 @@ func getReactionsHandler(c echo.Context) error {
 	reactions := make([]Reaction, len(reactionModels))
 	if len(reactionModels) > 0 {
 		livestreamModel := LivestreamModel{}
-		if err := tx.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livestreamID); err != nil {
+		if err := dbConn.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livestreamID); err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestream: "+err.Error())
 		}
-		livestream, err := fillLivestreamResponse(ctx, tx, livestreamModel)
+		livestream, err := fillLivestreamResponse(ctx, dbConn, livestreamModel)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livestream: "+err.Error())
 		}
 
 		for i := range reactionModels {
-			reaction, err := fillReactionResponseWithLivestream(ctx, tx, reactionModels[i], livestream)
+			reaction, err := fillReactionResponseWithLivestream(ctx, dbConn, reactionModels[i], livestream)
 			if err != nil {
 				return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
 			}
@@ -91,9 +85,6 @@ func getReactionsHandler(c echo.Context) error {
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
-	}
 
 	return c.JSON(http.StatusOK, reactions)
 }
@@ -174,7 +165,7 @@ func fillReactionResponse(ctx context.Context, tx *sqlx.Tx, reactionModel Reacti
 // reactionModel.LivestreamID every call. Used by getReactionsHandler, where
 // every returned row shares the same livestream_id, to avoid an N+1 re-fetch
 // of identical livestream data.
-func fillReactionResponseWithLivestream(ctx context.Context, tx *sqlx.Tx, reactionModel ReactionModel, livestream Livestream) (Reaction, error) {
+func fillReactionResponseWithLivestream(ctx context.Context, tx dbq, reactionModel ReactionModel, livestream Livestream) (Reaction, error) {
 	userModel, err := getUserModelByID(ctx, tx, reactionModel.UserID)
 	if err != nil {
 		return Reaction{}, err
