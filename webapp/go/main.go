@@ -114,7 +114,7 @@ func initializeHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to initialize: "+err.Error())
 	}
 
-	iconHashCache.Range(func(k, _ any) bool { iconHashCache.Delete(k); return true })
+	clearUserCaches()
 
 	collectPprotein()
 

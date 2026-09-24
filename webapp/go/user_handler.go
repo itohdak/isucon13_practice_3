@@ -432,9 +432,50 @@ func getIconHash(ctx context.Context, tx *sqlx.Tx, userID int64) (string, error)
 	return actual.(string), nil
 }
 
-func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (User, error) {
+// userModelCache / themeModelCache: users and themes are insert-only in this app
+// (no UPDATE/DELETE anywhere; register is the sole writer), so once a row has been
+// read it can never change. This removed ~90k `SELECT * FROM users WHERE id=?` and
+// ~90k `SELECT * FROM themes WHERE user_id=?` per benchmark run. Only successful
+// reads are cached (ErrNoRows is never cached); cleared by initializeHandler, which
+// truncates the tables and reuses ids.
+var (
+	userModelCache  sync.Map // int64 -> UserModel
+	themeModelCache sync.Map // int64 (user id) -> ThemeModel
+)
+
+func clearUserCaches() {
+	for _, m := range []*sync.Map{&userModelCache, &themeModelCache, &iconHashCache} {
+		m.Range(func(k, _ any) bool { m.Delete(k); return true })
+	}
+}
+
+func getUserModelByID(ctx context.Context, tx *sqlx.Tx, userID int64) (UserModel, error) {
+	if v, ok := userModelCache.Load(userID); ok {
+		return v.(UserModel), nil
+	}
+	userModel := UserModel{}
+	if err := tx.GetContext(ctx, &userModel, "SELECT * FROM users WHERE id = ?", userID); err != nil {
+		return UserModel{}, err
+	}
+	userModelCache.Store(userID, userModel)
+	return userModel, nil
+}
+
+func getThemeModel(ctx context.Context, tx *sqlx.Tx, userID int64) (ThemeModel, error) {
+	if v, ok := themeModelCache.Load(userID); ok {
+		return v.(ThemeModel), nil
+	}
 	themeModel := ThemeModel{}
-	if err := tx.GetContext(ctx, &themeModel, "SELECT * FROM themes WHERE user_id = ?", userModel.ID); err != nil {
+	if err := tx.GetContext(ctx, &themeModel, "SELECT * FROM themes WHERE user_id = ?", userID); err != nil {
+		return ThemeModel{}, err
+	}
+	themeModelCache.Store(userID, themeModel)
+	return themeModel, nil
+}
+
+func fillUserResponse(ctx context.Context, tx *sqlx.Tx, userModel UserModel) (User, error) {
+	themeModel, err := getThemeModel(ctx, tx, userModel.ID)
+	if err != nil {
 		return User{}, err
 	}
 
