@@ -5,6 +5,7 @@ After=syslog.target
 [Service]
 WorkingDirectory=/home/isucon/webapp/go
 EnvironmentFile=/home/isucon/env.sh
+Environment=GOGC=400
 
 User=isucon
 Group=isucon
