@@ -114,6 +114,8 @@ func initializeHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to initialize: "+err.Error())
 	}
 
+	iconHashCache.Range(func(k, _ any) bool { iconHashCache.Delete(k); return true })
+
 	collectPprotein()
 
 	c.Request().Header.Add("Content-Type", "application/json;charset=utf-8")
