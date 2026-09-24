@@ -66,6 +66,9 @@ func connectDB(logger echo.Logger) (*sqlx.DB, error) {
 	conf.Passwd = "isucon"
 	conf.DBName = "isupipe"
 	conf.ParseTime = true
+	// Without this every query was Prepare + Execute + Close (3 round trips; ~250k Prepares per
+	// bench window, 15s of MySQL time). Client-side interpolation makes it a single round trip.
+	conf.InterpolateParams = true
 
 	if v, ok := os.LookupEnv(networkTypeEnvKey); ok {
 		conf.Net = v
