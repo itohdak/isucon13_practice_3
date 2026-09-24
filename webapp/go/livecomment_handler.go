@@ -371,30 +371,19 @@ func moderateHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get last inserted NG word id: "+err.Error())
 	}
 
-	var ngwords []*NGWord
-	if err := tx.SelectContext(ctx, &ngwords, "SELECT * FROM ng_words WHERE livestream_id = ?", livestreamID); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get NG words: "+err.Error())
-	}
-
-	// NGワードにヒットする過去の投稿も全削除する
-	// NOTE: 元実装は対象livestreamに関係なく全livecommentsを毎回SELECTし(N+1)、
-	// 1件ずつ「自己結合によるLIKE評価」をGo側からDELETE文で1件ずつ発行していた
-	// (NGワード数 x 全livecomment数のラウンドトリップ)。DELETEの削除条件
-	// (対象livestreamのコメントであること・commentがNGワードにLIKE一致すること)
-	// 自体は変えず、対象livestreamの投稿だけを1クエリで一括削除するように変更。
-	// `comment LIKE CONCAT('%', ?, '%')` は元の自己結合によるLIKE評価
-	// (texts.text LIKE patterns.pattern、texts.text=comment固定値)と同じ比較を
-	// MySQL側でカラム参照として直接行うだけなので、削除される行集合は元実装と同一。
-	for _, ngword := range ngwords {
-		query := `
+	// NGワードにヒットする過去の投稿も全削除する(このlivestreamの全NGワードが対象)。
+	// One statement instead of one DELETE per NG word. The match must stay case-insensitive like
+	// the original implementation (literal-vs-literal LIKE under the connection collation
+	// utf8mb4_general_ci); a plain `comment LIKE CONCAT('%', word, '%')` on the utf8mb4_bin columns
+	// would be case-sensitive, so the word is explicitly re-collated (same trick as the spam check
+	// in postLivecommentHandler).
+	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM livecomments
-		WHERE
-		livestream_id = ? AND
-		comment LIKE CONCAT('%', ?, '%')
-		`
-		if _, err := tx.ExecContext(ctx, query, livestreamID, ngword.Word); err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to delete old livecomments that hit spams: "+err.Error())
-		}
+		WHERE livestream_id = ? AND EXISTS (
+			SELECT 1 FROM ng_words w
+			WHERE w.livestream_id = ? AND livecomments.comment LIKE CONCAT('%', w.word COLLATE utf8mb4_general_ci, '%')
+		)`, livestreamID, livestreamID); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to delete old livecomments that hit spams: "+err.Error())
 	}
 
 	if err := tx.Commit(); err != nil {
