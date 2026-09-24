@@ -15,7 +15,6 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 
 	"github.com/gorilla/sessions"
 	"github.com/kaz/pprotein/integration/standalone"
@@ -154,8 +153,8 @@ func main() {
 	go standalone.Integrate(":8888")
 	e := echo.New()
 	e.Debug = false // true makes echo indent every JSON response (5% of app CPU in pprof)
-	e.Logger.SetLevel(echolog.DEBUG)
-	e.Use(middleware.Logger())
+	e.Logger.SetLevel(echolog.WARN) // per-request access logging lives in nginx (LTSV); keep app log for warnings/errors only
+	// echo access logger removed: nginx LTSV access.log already records every request (with reqtime/apptime); this was ~4% of s1 CPU in journald plus formatting
 	cookieStore := sessions.NewCookieStore(secret)
 	cookieStore.Options.Domain = "*.u.isucon.local"
 	e.Use(session.Middleware(cookieStore))
