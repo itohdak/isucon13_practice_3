@@ -118,12 +118,41 @@ func initializeHandler(c echo.Context) error {
 
 	clearUserCaches()
 
+	// init.sh の初期データ投入が生むログも消すため、必ず init.sh の後・収集の前に行う
+	rotateLogs()
+
 	collectPprotein()
 
 	c.Request().Header.Add("Content-Type", "application/json;charset=utf-8")
 	return c.JSON(http.StatusOK, InitializeResponse{
 		Language: "golang",
 	})
+}
+
+// rotateLogs truncates the nginx access log (this host) and the MySQL slow log (DB host)
+// so each benchmark run starts from empty logs; otherwise pprotein's httplog/slowlog
+// artifacts accumulate every previous run. Best-effort: never fails /api/initialize.
+func rotateLogs() {
+	if os.Getenv("LOG_ROTATE_DISABLED") == "1" {
+		return
+	}
+
+	run := func(name string, args ...string) {
+		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+			log.Printf("log rotation: %s %v failed: %v: %s", name, args, err, string(out))
+		}
+	}
+
+	run("sudo", "truncate", "-s", "0", "/var/log/nginx/access.log")
+
+	const slowLog = "/var/log/mysql/mysql-slow.log"
+	dbHost := os.Getenv("ISUCON13_MYSQL_DIALCONFIG_ADDRESS")
+	if dbHost == "" || dbHost == "127.0.0.1" || dbHost == "localhost" {
+		run("sudo", "truncate", "-s", "0", slowLog)
+		return
+	}
+	run("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=3",
+		"isucon@"+dbHost, "sudo truncate -s 0 "+slowLog)
 }
 
 func collectPprotein() {
