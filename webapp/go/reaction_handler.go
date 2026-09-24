@@ -66,11 +66,11 @@ func getReactionsHandler(c echo.Context) error {
 	// 構築して使い回す(結果は元実装と同一)。
 	reactions := make([]Reaction, len(reactionModels))
 	if len(reactionModels) > 0 {
-		livestreamModel := LivestreamModel{}
-		if err := dbConn.GetContext(ctx, &livestreamModel, "SELECT * FROM livestreams WHERE id = ?", livestreamID); err != nil {
+		livestreamModel, err := getLivestreamModelCached(ctx, dbConn, int64(livestreamID))
+		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to get livestream: "+err.Error())
 		}
-		livestream, err := fillLivestreamResponse(ctx, dbConn, livestreamModel)
+		livestream, err := fillLivestreamResponseCached(ctx, dbConn, livestreamModel)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill livestream: "+err.Error())
 		}
@@ -111,11 +111,13 @@ func postReactionHandler(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "failed to decode the request body as json")
 	}
 
-	tx, err := dbConn.BeginTxx(ctx, nil)
+	// No transaction: one INSERT (autocommit is equivalent). The livestream is resolved first so a
+	// reaction for a missing livestream still fails (500) without leaving a row behind, as the
+	// old transaction-with-rollback did.
+	livestreamModel, err := getLivestreamModelCached(ctx, dbConn, int64(livestreamID))
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to begin transaction: "+err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
 	}
-	defer tx.Rollback()
 
 	reactionModel := ReactionModel{
 		UserID:       int64(userID),
@@ -124,7 +126,7 @@ func postReactionHandler(c echo.Context) error {
 		CreatedAt:    time.Now().Unix(),
 	}
 
-	result, err := tx.NamedExecContext(ctx, "INSERT INTO reactions (user_id, livestream_id, emoji_name, created_at) VALUES (:user_id, :livestream_id, :emoji_name, :created_at)", reactionModel)
+	result, err := dbConn.NamedExecContext(ctx, "INSERT INTO reactions (user_id, livestream_id, emoji_name, created_at) VALUES (:user_id, :livestream_id, :emoji_name, :created_at)", reactionModel)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to insert reaction: "+err.Error())
 	}
@@ -135,13 +137,13 @@ func postReactionHandler(c echo.Context) error {
 	}
 	reactionModel.ID = reactionID
 
-	reaction, err := fillReactionResponse(ctx, tx, reactionModel)
+	livestream, err := fillLivestreamResponseCached(ctx, dbConn, livestreamModel)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
 	}
-
-	if err := tx.Commit(); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to commit: "+err.Error())
+	reaction, err := fillReactionResponseWithLivestream(ctx, dbConn, reactionModel, livestream)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fill reaction: "+err.Error())
 	}
 
 	return c.JSON(http.StatusCreated, reaction)

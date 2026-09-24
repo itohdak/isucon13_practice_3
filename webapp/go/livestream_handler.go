@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -550,9 +551,32 @@ func fillLivestreamResponse(ctx context.Context, tx dbq, livestreamModel Livestr
 		return Livestream{}, err
 	}
 
-	var livestreamTagModels []*LivestreamTagModel
-	if err := tx.SelectContext(ctx, &livestreamTagModels, "SELECT * FROM livestream_tags WHERE livestream_id = ?", livestreamModel.ID); err != nil {
+	tags, err := loadLivestreamTags(ctx, tx, livestreamModel.ID)
+	if err != nil {
 		return Livestream{}, err
+	}
+	return buildLivestream(livestreamModel, owner, tags), nil
+}
+
+func buildLivestream(livestreamModel LivestreamModel, owner User, tags []Tag) Livestream {
+	return Livestream{
+		ID:           livestreamModel.ID,
+		Owner:        owner,
+		Title:        livestreamModel.Title,
+		Tags:         tags,
+		Description:  livestreamModel.Description,
+		PlaylistUrl:  livestreamModel.PlaylistUrl,
+		ThumbnailUrl: livestreamModel.ThumbnailUrl,
+		StartAt:      livestreamModel.StartAt,
+		EndAt:        livestreamModel.EndAt,
+	}
+}
+
+// loadLivestreamTags reads the tags of one livestream (livestream_tags, then tags by id).
+func loadLivestreamTags(ctx context.Context, tx dbq, livestreamID int64) ([]Tag, error) {
+	var livestreamTagModels []*LivestreamTagModel
+	if err := tx.SelectContext(ctx, &livestreamTagModels, "SELECT * FROM livestream_tags WHERE livestream_id = ?", livestreamID); err != nil {
+		return nil, err
 	}
 
 	// NOTE: 元実装はタグ1件ごとに`SELECT * FROM tags WHERE id = ?`を発行していた
@@ -568,11 +592,11 @@ func fillLivestreamResponse(ctx context.Context, tx dbq, livestreamModel Livestr
 
 		query, params, err := sqlx.In("SELECT * FROM tags WHERE id IN (?)", tagIDs)
 		if err != nil {
-			return Livestream{}, err
+			return nil, err
 		}
 		var tagModels []*TagModel
 		if err := tx.SelectContext(ctx, &tagModels, query, params...); err != nil {
-			return Livestream{}, err
+			return nil, err
 		}
 
 		tagByID := make(map[int64]*TagModel, len(tagModels))
@@ -588,17 +612,52 @@ func fillLivestreamResponse(ctx context.Context, tx dbq, livestreamModel Livestr
 			}
 		}
 	}
+	return tags, nil
+}
 
-	livestream := Livestream{
-		ID:           livestreamModel.ID,
-		Owner:        owner,
-		Title:        livestreamModel.Title,
-		Tags:         tags,
-		Description:  livestreamModel.Description,
-		PlaylistUrl:  livestreamModel.PlaylistUrl,
-		ThumbnailUrl: livestreamModel.ThumbnailUrl,
-		StartAt:      livestreamModel.StartAt,
-		EndAt:        livestreamModel.EndAt,
+// Livestream rows and their tag lists are insert-only (reserveLivestreamHandler inserts the
+// livestream and its livestream_tags in one transaction; nothing ever updates or deletes them, and
+// the livestream is unreachable by id before that transaction commits), so once a *committed*
+// livestream has been read it never changes. The viewer-facing handlers (livecomment/reaction
+// GET+POST) resolve the same livestream on every call, so they use these caches; search and the
+// other list handlers deliberately keep hitting MySQL (speeding search up shifts the bench's
+// scenario mix towards non-tip scenarios and lowers the score, see reports/iterations).
+// Only successful reads are cached; initializeHandler clears them (ids are reused).
+var (
+	livestreamModelCache sync.Map // int64 -> LivestreamModel
+	livestreamTagsCache  sync.Map // int64 -> []Tag
+)
+
+func getLivestreamModelCached(ctx context.Context, q dbq, id int64) (LivestreamModel, error) {
+	if v, ok := livestreamModelCache.Load(id); ok {
+		return v.(LivestreamModel), nil
 	}
-	return livestream, nil
+	var m LivestreamModel
+	if err := q.GetContext(ctx, &m, "SELECT * FROM livestreams WHERE id = ?", id); err != nil {
+		return LivestreamModel{}, err
+	}
+	livestreamModelCache.Store(id, m)
+	return m, nil
+}
+
+// fillLivestreamResponseCached is fillLivestreamResponse with the tag list served from the
+// immutable-tags cache. The owner is still resolved per call (its icon hash can change).
+func fillLivestreamResponseCached(ctx context.Context, q dbq, livestreamModel LivestreamModel) (Livestream, error) {
+	ownerModel, err := getUserModelByID(ctx, q, livestreamModel.UserID)
+	if err != nil {
+		return Livestream{}, err
+	}
+	owner, err := fillUserResponse(ctx, q, ownerModel)
+	if err != nil {
+		return Livestream{}, err
+	}
+	if v, ok := livestreamTagsCache.Load(livestreamModel.ID); ok {
+		return buildLivestream(livestreamModel, owner, v.([]Tag)), nil
+	}
+	tags, err := loadLivestreamTags(ctx, q, livestreamModel.ID)
+	if err != nil {
+		return Livestream{}, err
+	}
+	livestreamTagsCache.Store(livestreamModel.ID, tags)
+	return buildLivestream(livestreamModel, owner, tags), nil
 }

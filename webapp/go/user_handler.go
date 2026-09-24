@@ -509,7 +509,7 @@ var (
 )
 
 func clearUserCaches() {
-	for _, m := range []*sync.Map{&userModelCache, &themeModelCache, &iconHashCache, &iconImageCache, &userByNameCache} {
+	for _, m := range []*sync.Map{&userModelCache, &themeModelCache, &iconHashCache, &iconImageCache, &userByNameCache, &livestreamModelCache, &livestreamTagsCache} {
 		m.Range(func(k, _ any) bool { m.Delete(k); return true })
 	}
 }
